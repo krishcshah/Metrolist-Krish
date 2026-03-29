@@ -1,0 +1,152 @@
+name: Fork Release
+
+# Builds a FOSS debug APK using a self-generated debug keystore (no signing
+# secrets required) and publishes / updates the rolling "krish-latest"
+# pre-release on GitHub so the APK is always one click away.
+#
+# Triggered by:
+#   • workflow_dispatch  — run manually from the Actions tab
+#   • workflow_call      — called by sync_upstream.yml after a successful merge
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build APK and publish krish-latest
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      # ── Version info ────────────────────────────────────────────────────────
+      - name: Extract version info
+        id: version
+        run: |
+          VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)
+          SHORT_SHA="${GITHUB_SHA::7}"
+          echo "version_name=${VERSION}" >> $GITHUB_OUTPUT
+          echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "release_title=Metrolist Krish v${VERSION} (${SHORT_SHA})" >> $GITHUB_OUTPUT
+
+      # ── Java / Gradle ────────────────────────────────────────────────────────
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: "21"
+          distribution: "temurin"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          cache-encryption-key: ${{ secrets.GRADLE_CACHE_KEY }}
+          cache-cleanup: on-success
+
+      - name: Setup and generate Protobuf
+        uses: ./.github/actions/setup-protobuf
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # ── Debug keystore (self-generated, persisted across runs) ───────────────
+      - name: Restore fork debug keystore
+        id: keystore
+        uses: actions/cache/restore@v4
+        with:
+          path: app/fork-debug.keystore
+          key: fork-debug-keystore-v1
+
+      - name: Generate fork debug keystore if not cached
+        if: steps.keystore.outputs.cache-hit != 'true'
+        run: |
+          keytool -genkeypair -v \
+            -keystore app/fork-debug.keystore \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Metrolist Krish Fork,O=MetrolistKrish,C=US"
+
+      - name: Save fork debug keystore
+        if: steps.keystore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: app/fork-debug.keystore
+          key: fork-debug-keystore-v1
+
+      # ── Build ────────────────────────────────────────────────────────────────
+      - name: Build FOSS Debug APK
+        run: ./gradlew --console=plain assembleFossDebug --warning-mode summary
+        env:
+          METROLIST_APPLICATION_ID: com.metrolist.music
+          METROLIST_APP_NAME: Metrolist Krish
+          METROLIST_DEBUG_KEYSTORE_PATH: fork-debug.keystore
+          PULL_REQUEST: "false"
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          # Optional: add LASTFM_API_KEY and LASTFM_SECRET to your repo's
+          # Actions secrets to enable Last.fm scrobbling in the built APK.
+          # The build succeeds without them; Last.fm integration is simply
+          # disabled at runtime when these values are absent.
+          LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+          LASTFM_SECRET: ${{ secrets.LASTFM_SECRET }}
+
+      # ── Rename and upload artifact ───────────────────────────────────────────
+      - name: Rename APK
+        run: |
+          mkdir -p release_out
+          find app/build/outputs/apk/foss/debug -name "*.apk" \
+            -exec cp {} release_out/Metrolist-Krish-v${{ steps.version.outputs.version_name }}.apk \;
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: Metrolist-Krish-v${{ steps.version.outputs.version_name }}
+          path: release_out/*.apk
+          retention-days: 90
+
+      # ── Publish rolling "krish-latest" pre-release ──────────────────────────
+      - name: Delete existing krish-latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete krish-latest --yes || true
+
+      - name: Delete existing krish-latest tag
+        run: git push origin :refs/tags/krish-latest || true
+
+      - name: Create krish-latest pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create krish-latest \
+            --title "${{ steps.version.outputs.release_title }}" \
+            --notes "$(cat <<'EOF'
+          ## Metrolist Krish — Latest Fork Build
+
+          **Upstream version:** v${{ steps.version.outputs.version_name }}
+          **Commit:** ${{ steps.version.outputs.short_sha }}
+
+          This APK is built automatically from the \`main\` branch of this fork.
+          It is signed with a self-generated debug key, so it installs as a
+          separate app from any officially-signed release.
+
+          ### Installing
+          1. Download the APK below.
+          2. On your Android device, enable *Install from unknown sources* for
+             your browser or file manager.
+          3. Open the downloaded APK and tap **Install**.
+
+          ### Updating
+          This release is recreated on every push to \`main\` (including upstream
+          syncs), so you can always return here and download the latest version.
+          EOF
+          )" \
+            --prerelease \
+            release_out/*.apk
