@@ -53,7 +53,19 @@ jobs:
           LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
           LASTFM_SECRET: ${{ secrets.LASTFM_SECRET }}
 
-      - name: Sign APK
+      - name: Determine release signing mode
+        id: signing_mode
+        env:
+          HAS_KEYSTORE: ${{ secrets.KEYSTORE }}
+        run: |
+          if [ -n "$HAS_KEYSTORE" ]; then
+            echo "mode=secret" >> $GITHUB_OUTPUT
+          else
+            echo "mode=generated" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Sign APK (secret keystore)
+        if: steps.signing_mode.outputs.mode == 'secret'
         uses: ilharp/sign-android-release@v2.0.0
         with:
           releaseDir: app/build/outputs/apk/foss/release/
@@ -62,6 +74,29 @@ jobs:
           keyStorePassword: ${{ secrets.KEYSTORE_PASSWORD }}
           keyPassword: ${{ secrets.KEY_PASSWORD }}
           buildToolsVersion: 35.0.0
+
+      - name: Sign APK (generated keystore)
+        if: steps.signing_mode.outputs.mode == 'generated'
+        run: |
+          keytool -genkeypair -v \
+            -keystore /tmp/release-signing.keystore \
+            -storepass android -keypass android \
+            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Metrolist Krish,O=Metrolist,C=US"
+          OUTPUT_DIR="app/build/outputs/apk/foss/release"
+          for apk in "$OUTPUT_DIR"/*.apk; do
+            [[ "$apk" == *"-signed.apk" ]] && continue
+            aligned="${apk%.apk}-aligned.apk"
+            signed="${apk%.apk}-signed.apk"
+            ${ANDROID_HOME}/build-tools/35.0.0/zipalign -v 4 "$apk" "$aligned"
+            ${ANDROID_HOME}/build-tools/35.0.0/apksigner sign \
+              --ks /tmp/release-signing.keystore \
+              --ks-pass pass:android \
+              --key-pass pass:android \
+              --ks-key-alias androiddebugkey \
+              --out "$signed" "$aligned"
+            rm "$aligned"
+          done
 
       - name: Move signed APK
         run: |

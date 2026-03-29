@@ -73,7 +73,7 @@ jobs:
             -keyalg RSA \
             -keysize 2048 \
             -validity 10000 \
-            -dname "CN=Metrolist Krish Fork,O=MetrolistKrish,C=US"
+            -dname "CN=Metrolist Krish Fork,O=Metrolist Krish,C=US"
 
       - name: Save fork debug keystore
         if: steps.keystore.outputs.cache-hit != 'true'
