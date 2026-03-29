@@ -1,0 +1,156 @@
+name: Sync Upstream
+
+# Automatically merges changes from the upstream MetrolistGroup/Metrolist
+# repository into this fork's main branch once a week (or on demand).
+#
+# On a clean merge  → pushes to main and triggers fork_release.yml so a
+#                     fresh APK is always available.
+# On merge conflict → opens a GitHub issue with step-by-step instructions
+#                     to resolve manually, so your custom changes are never
+#                     silently discarded.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Every Monday at 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  actions: write # needed to trigger fork_release.yml via workflow_dispatch
+
+jobs:
+  sync:
+    name: Merge upstream into main
+    runs-on: ubuntu-latest
+
+    outputs:
+      status: ${{ steps.merge.outputs.status }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/MetrolistGroup/Metrolist.git || true
+
+      - name: Fetch upstream main
+        run: git fetch upstream main
+
+      - name: Attempt merge
+        id: merge
+        run: |
+          if git merge --no-edit upstream/main; then
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            git merge --abort
+            echo "status=conflict" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Push merged changes to main
+        if: steps.merge.outputs.status == 'success'
+        run: git push origin main
+
+      # ── Conflict → open / update a GitHub issue ──────────────────────────────
+      - name: Create or refresh conflict issue
+        if: steps.merge.outputs.status == 'conflict'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const label = 'upstream-sync';
+
+            // Ensure the label exists
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: label
+              });
+            } catch {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: label,
+                color: 'e4e669',
+                description: 'Upstream sync needs manual attention'
+              });
+            }
+
+            // Only open one issue at a time
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: label
+            });
+
+            const title = '🔀 Upstream sync: merge conflict needs manual resolution';
+            const body = [
+              'The weekly automatic sync from [MetrolistGroup/Metrolist](https://github.com/MetrolistGroup/Metrolist) could not be completed automatically because of merge conflicts.',
+              '',
+              '## How to resolve',
+              '',
+              'Run these commands on your local machine:',
+              '',
+              '```bash',
+              '# One-time setup — add the upstream remote',
+              'git remote add upstream https://github.com/MetrolistGroup/Metrolist.git || true',
+              '',
+              '# Fetch and merge',
+              'git fetch upstream',
+              'git checkout main',
+              'git pull origin main          # make sure you are up to date',
+              'git merge upstream/main',
+              '',
+              '# Open the conflicting files in your editor, resolve the conflicts,',
+              '# then stage and commit:',
+              'git add .',
+              'git commit -m "chore: merge upstream changes"',
+              'git push origin main',
+              '```',
+              '',
+              '## Tips for preserving your customisations',
+              '',
+              '- Your custom changes (e.g. the speed button added to the player) live in specific files.',
+              '  When the same files are modified upstream, Git will mark them with conflict markers (`<<<<<<`, `======`, `>>>>>>`).',
+              '- Keep your version of those lines and incorporate any new upstream logic around them.',
+              '- Once pushed, the `Fork Release` workflow will automatically build a fresh APK.',
+              '',
+              'Close this issue once the conflict is resolved.'
+            ].join('\n');
+
+            if (open.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: [label]
+              });
+            } else {
+              // Add a comment to the existing issue so nothing is missed
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: open[0].number,
+                body: `⚠️ Another sync attempt failed on ${new Date().toUTCString()} with the same conflict. Please resolve and push.`
+              });
+            }
+
+  # ── On success, kick off a fresh APK build + release ─────────────────────────
+  release:
+    name: Trigger fork release
+    needs: sync
+    if: needs.sync.outputs.status == 'success'
+    uses: ./.github/workflows/fork_release.yml
+    permissions:
+      contents: write
+    secrets: inherit

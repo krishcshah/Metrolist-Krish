@@ -162,6 +162,7 @@ import com.metrolist.music.ui.component.SquigglySlider
 import com.metrolist.music.ui.component.WavySlider
 import com.metrolist.music.ui.component.rememberBottomSheetState
 import com.metrolist.music.ui.menu.PlayerMenu
+import com.metrolist.music.ui.menu.TempoPitchDialog
 import com.metrolist.music.ui.screens.settings.DarkMode
 import com.metrolist.music.ui.theme.PlayerColorExtractor
 import com.metrolist.music.ui.theme.PlayerSliderColors
@@ -693,6 +694,14 @@ fun BottomSheetPlayer(
         mutableStateOf(false)
     }
 
+    var showSpeedDialog by rememberSaveable {
+        mutableStateOf(false)
+    }
+
+    if (showSpeedDialog) {
+        TempoPitchDialog(onDismiss = { showSpeedDialog = false })
+    }
+
     // Position update - only for local playback
     // When casting, we use castPosition directly to avoid sync issues
     // Use isPlaying instead of playbackState to ensure continuous updates during playback
@@ -1118,6 +1127,23 @@ fun BottomSheetPlayer(
                             }
                         }
 
+                        FilledIconButton(
+                            onClick = { showSpeedDialog = true },
+                            shape = middleShape,
+                            colors =
+                                IconButtonDefaults.filledIconButtonColors(
+                                    containerColor = textButtonColor,
+                                    contentColor = iconButtonColor,
+                                ),
+                            modifier = Modifier.size(42.dp),
+                        ) {
+                            Icon(
+                                painter = painterResource(R.drawable.speed),
+                                contentDescription = null,
+                                modifier = Modifier.size(24.dp),
+                            )
+                        }
+
                         AnimatedContent(targetState = showInlineLyrics, label = "LikeButton") { showLyrics ->
                             if (showLyrics) {
                                 val currentLyrics by playerConnection.currentLyrics.collectAsState(initial = null)
@@ -1235,6 +1261,25 @@ fun BottomSheetPlayer(
                                 )
                             }
                         }
+                    }
+
+                    Spacer(modifier = Modifier.size(12.dp))
+
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier =
+                            Modifier
+                                .size(40.dp)
+                                .clip(RoundedCornerShape(24.dp))
+                                .background(textButtonColor)
+                                .clickable { showSpeedDialog = true },
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.speed),
+                            contentDescription = null,
+                            tint = iconButtonColor,
+                            modifier = Modifier.size(24.dp),
+                        )
                     }
 
                     Spacer(modifier = Modifier.size(12.dp))
